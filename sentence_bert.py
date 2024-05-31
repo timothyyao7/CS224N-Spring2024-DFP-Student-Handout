@@ -221,8 +221,7 @@ def train_multitask(args):
                 b_mask_2 = b_mask_2.to(device)
                 b_labels = b_labels.to(device)
 
-                # scale labels [0.0, 5.0] -> [0.0, 1.0]
-                # b_labels = b_labels.float() / 5.0
+                b_labels = b_labels.float()
 
                 optimizer.zero_grad()
                 logits = model.predict_paraphrase(b_ids_1, b_mask_1, b_ids_2, b_mask_2)
