@@ -57,7 +57,8 @@ class MultitaskSentenceBERT(nn.Module):
         self.pooling = Pooling(config.hidden_size, config.pooling_mode)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.project_sentiment = nn.Linear(config.hidden_size, config.num_labels)
-        self.project_para = nn.Linear(config.hidden_size, 1)
+        self.project_para = nn.Linear(config.hidden_size, 1)            # original BERT classification
+        self.project_para_s = nn.Linear(3 * config.hidden_size, 1)      # SBERT classification
         self.project_sts = None
 
         self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
@@ -72,6 +73,7 @@ class MultitaskSentenceBERT(nn.Module):
         output = self.project_sentiment(output)
         return output
     
+    # used for original BERT para and STS tasks
     def get_similarity_embeddings(self,
                                   input_ids_1, attention_mask_1,
                                   input_ids_2, attention_mask_2):
@@ -85,10 +87,18 @@ class MultitaskSentenceBERT(nn.Module):
     def predict_paraphrase(self,
                            input_ids_1, attention_mask_1,
                            input_ids_2, attention_mask_2):
-        output = self.get_similarity_embeddings(input_ids_1, attention_mask_1, input_ids_2, attention_mask_2)
-        output = output["pooler_output"]
-        output = self.dropout(output)
-        output = self.project_para(output)
+        # original BERT paraphrase classification
+        # output = self.get_similarity_embeddings(input_ids_1, attention_mask_1, input_ids_2, attention_mask_2)
+        # output = output["pooler_output"]
+        # output = self.dropout(output)
+        # output = self.project_para(output)
+
+        # SBERT paraphrase classification
+        u, v = self.get_sentence_embeddings(input_ids_1, attention_mask_1, input_ids_2, attention_mask_2)
+        diff = torch.abs(u - v)
+        output = torch.cat((u, v, diff), dim=1)
+        # output = self.dropout(output)
+        output = self.project_para_s(output)
         return output
     
     def get_sentence_embeddings(self,
