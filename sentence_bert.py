@@ -19,10 +19,11 @@ from datasets import (
     SentenceClassificationTestDataset,
     SentencePairDataset,
     SentencePairTestDataset,
-    load_multitask_data
+    load_multitask_data,
+    load_multitask_data_nli
 )
 
-from evaluation import model_eval_sst, model_eval_multitask, model_eval_test_multitask
+from evaluation import model_eval_sst, model_eval_multitask, model_eval_test_multitask, model_eval_multitask_nli
 
 TQDM_DISABLE=False
 
@@ -60,6 +61,7 @@ class MultitaskSentenceBERT(nn.Module):
         self.project_para = nn.Linear(config.hidden_size, 1)            # original BERT classification
         self.project_para_s = nn.Linear(3 * config.hidden_size, 1)      # SBERT classification
         self.project_sts = None
+        self.project_inf = nn.Linear(3 * config.hidden_size, 3)
 
         self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
 
@@ -115,6 +117,15 @@ class MultitaskSentenceBERT(nn.Module):
                            input_ids_2, attention_mask_2):
         u, v = self.get_sentence_embeddings(input_ids_1, attention_mask_1, input_ids_2, attention_mask_2)
         return self.cos(u, v)
+    
+    def predict_inference(self,
+                          input_ids_1, attention_mask_1,
+                          input_ids_2, attention_mask_2):
+        u, v = self.get_sentence_embeddings(input_ids_1, attention_mask_1, input_ids_2, attention_mask_2)
+        diff = torch.abs(u - v)
+        output = torch.cat((u, v, diff), dim=1)
+        output = self.project_inf(output)
+        return output
 
 
 def save_model(model, optimizer, args, config, filepath):
@@ -137,8 +148,12 @@ def train_multitask(args):
     '''
     device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
     # Create the data and its corresponding datasets and dataloader.
-    sst_train_data, num_labels, para_train_data, sts_train_data = load_multitask_data(args.sst_train, args.para_train, args.sts_train, split ='train')
-    sst_dev_data, num_labels, para_dev_data, sts_dev_data = load_multitask_data(args.sst_dev, args.para_dev, args.sts_dev, split ='train')
+    if args.should_train_nli:
+        sst_train_data, num_labels, para_train_data, sts_train_data, nli_train_data = load_multitask_data_nli(args.sst_train, args.para_train, args.sts_train, args.nli_train, split ='train')
+        sst_dev_data, num_labels, para_dev_data, sts_dev_data, nli_dev_data = load_multitask_data_nli(args.sst_dev, args.para_dev, args.sts_dev, args.nli_dev, split ='dev')
+    else:
+        sst_train_data, num_labels, para_train_data, sts_train_data = load_multitask_data(args.sst_train, args.para_train, args.sts_train, split ='train')
+        sst_dev_data, num_labels, para_dev_data, sts_dev_data = load_multitask_data(args.sst_dev, args.para_dev, args.sts_dev, split ='dev')
 
     # Sentiment classification: SST dataset
     sst_train_data = SentenceClassificationDataset(sst_train_data, args)
@@ -159,13 +174,23 @@ def train_multitask(args):
                                      collate_fn=para_dev_data.collate_fn)
 
     # Semantic textual similarity (STS): SemEval dataset
-    sts_train_data = SentencePairDataset(sts_train_data, args)
-    sts_dev_data = SentencePairDataset(sts_dev_data, args)
+    sts_train_data = SentencePairDataset(sts_train_data, args, isRegression=True)
+    sts_dev_data = SentencePairDataset(sts_dev_data, args, isRegression=True)
 
     sts_train_dataloader = DataLoader(sts_train_data, shuffle=True, batch_size=args.batch_size,
                                       collate_fn=sts_train_data.collate_fn)
     sts_dev_dataloader = DataLoader(sts_dev_data, shuffle=False, batch_size=args.batch_size,
                                     collate_fn=para_dev_data.collate_fn)
+    
+    # Natural Language Inference (NLI): SNLI dataset
+    if args.should_train_nli:
+        nli_train_data = SentencePairDataset(nli_train_data, args)
+        nli_dev_data = SentencePairDataset(nli_dev_data, args)
+
+        nli_train_dataloader = DataLoader(nli_train_data, shuffle=True, batch_size=args.batch_size,
+                                          collate_fn=nli_train_data.collate_fn)
+        nli_dev_dataloader = DataLoader(nli_dev_data, shuffle=False, batch_size=args.batch_size,
+                                        collate_fn=nli_dev_data.collate_fn)
 
     # Init model.
     config = {'hidden_dropout_prob': args.hidden_dropout_prob,
@@ -193,6 +218,8 @@ def train_multitask(args):
         num_batches_para = 0
         train_loss_sts = 0
         num_batches_sts = 0
+        train_loss_nli = 0
+        num_batches_nli = 0
 
         # train on SST data
         if args.should_train_sst:
@@ -246,52 +273,96 @@ def train_multitask(args):
             train_loss_para = train_loss_para / num_batches_para
 
         # train on STS data
-        for batch in tqdm(sts_train_dataloader, desc=f'train-sts-{epoch}', disable=TQDM_DISABLE):
-            b_ids_1, b_mask_1, b_ids_2, b_mask_2, b_labels = (batch['token_ids_1'],
-                                                              batch['attention_mask_1'],
-                                                              batch['token_ids_2'],
-                                                              batch['attention_mask_2'],
-                                                              batch['labels'])
-            
-            b_ids_1 = b_ids_1.to(device)
-            b_mask_1 = b_mask_1.to(device)
-            b_ids_2 = b_ids_2.to(device)
-            b_mask_2 = b_mask_2.to(device)
-            b_labels = b_labels.to(device)
+        if args.should_train_sts:
+            for batch in tqdm(sts_train_dataloader, desc=f'train-sts-{epoch}', disable=TQDM_DISABLE):
+                b_ids_1, b_mask_1, b_ids_2, b_mask_2, b_labels = (batch['token_ids_1'],
+                                                                batch['attention_mask_1'],
+                                                                batch['token_ids_2'],
+                                                                batch['attention_mask_2'],
+                                                                batch['labels'])
+                
+                b_ids_1 = b_ids_1.to(device)
+                b_mask_1 = b_mask_1.to(device)
+                b_ids_2 = b_ids_2.to(device)
+                b_mask_2 = b_mask_2.to(device)
+                b_labels = b_labels.to(device)
 
-            # scale labels [0.0, 5.0] -> [0.0, 1.0]
-            b_labels = b_labels.float() / 5.0
+                # scale labels [0.0, 5.0] -> [0.0, 1.0]
+                b_labels = b_labels.float() / 5.0
 
-            optimizer.zero_grad()
-            cos_similarity = model.predict_similarity(b_ids_1, b_mask_1, b_ids_2, b_mask_2)
-            # loss = F.cosine_embedding_loss(u, v, b_labels, reduction='sum') / args.batch_size
-            loss = F.mse_loss(cos_similarity, b_labels, reduction='sum') / args.batch_size
+                optimizer.zero_grad()
+                cos_similarity = model.predict_similarity(b_ids_1, b_mask_1, b_ids_2, b_mask_2)
+                # loss = F.cosine_embedding_loss(u, v, b_labels, reduction='sum') / args.batch_size
+                loss = F.mse_loss(cos_similarity, b_labels, reduction='sum') / args.batch_size
 
-            loss.backward()
-            optimizer.step()
+                loss.backward()
+                optimizer.step()
 
-            train_loss_sts += loss.item()
-            num_batches_sts += 1
+                train_loss_sts += loss.item()
+                num_batches_sts += 1
 
-        train_loss_sts = train_loss_sts / num_batches_sts
+            train_loss_sts = train_loss_sts / num_batches_sts
 
-        train_sst_acc, _, _, train_para_acc, _, _, train_sts_corr, _, _ = model_eval_multitask(sst_train_dataloader,
-                                                                                               para_train_dataloader,
-                                                                                               sts_train_dataloader,
-                                                                                               model,
-                                                                                               device)
-        dev_sst_acc, _, _, dev_para_acc, _, _, dev_sts_corr, _, _ = model_eval_multitask(sst_dev_dataloader,
-                                                                                         para_dev_dataloader,
-                                                                                         sts_dev_dataloader,
-                                                                                         model,
-                                                                                         device)
+        # train on NLI data
+        if args.should_train_nli:
+            for batch in tqdm(nli_train_dataloader, desc=f'train-nli-{epoch}', disable=TQDM_DISABLE):
+                b_ids_1, b_mask_1, b_ids_2, b_mask_2, b_labels = (batch['token_ids_1'],
+                                                                  batch['attention_mask_1'],
+                                                                  batch['token_ids_2'],
+                                                                  batch['attention_mask_2'],
+                                                                  batch['labels'])
+                
+                b_ids_1 = b_ids_1.to(device)
+                b_mask_1 = b_mask_1.to(device)
+                b_ids_2 = b_ids_2.to(device)
+                b_mask_2 = b_mask_2.to(device)
+                b_labels = b_labels.to(device)
+
+                # b_labels = b_labels.float()
+
+                optimizer.zero_grad()
+                logits = model.predict_inference(b_ids_1, b_mask_1, b_ids_2, b_mask_2)
+                loss = F.cross_entropy(logits, b_labels.view(-1), reduction='sum') / args.batch_size
+
+                loss.backward()
+                optimizer.step()
+
+                train_loss_nli += loss.item()
+                num_batches_nli += 1
+
+            train_loss_nli = train_loss_nli / num_batches_nli
+
+        if args.should_train_nli:
+            train_sst_acc, _, _, train_para_acc, _, _, train_sts_corr, _, _, train_nli_acc, _, _ = model_eval_multitask_nli(sst_train_dataloader,
+                                                                                                                            para_train_dataloader,
+                                                                                                                            sts_train_dataloader,
+                                                                                                                            nli_train_dataloader,
+                                                                                                                            model,
+                                                                                                                            device)
+            dev_sst_acc, _, _, dev_para_acc, _, _, dev_sts_corr, _, _, dev_nli_acc, _, _ = model_eval_multitask_nli(sst_dev_dataloader,
+                                                                                                                    para_dev_dataloader,
+                                                                                                                    sts_dev_dataloader,
+                                                                                                                    nli_dev_dataloader,
+                                                                                                                    model,
+                                                                                                                    device)
+        else:
+            train_sst_acc, _, _, train_para_acc, _, _, train_sts_corr, _, _ = model_eval_multitask(sst_train_dataloader,
+                                                                                                para_train_dataloader,
+                                                                                                sts_train_dataloader,
+                                                                                                model,
+                                                                                                device)
+            dev_sst_acc, _, _, dev_para_acc, _, _, dev_sts_corr, _, _ = model_eval_multitask(sst_dev_dataloader,
+                                                                                            para_dev_dataloader,
+                                                                                            sts_dev_dataloader,
+                                                                                            model,
+                                                                                            device)
 
         # select model based on leaderboard overall performance
         overall_score = (dev_sst_acc + (dev_sts_corr + 1) / 2 + dev_para_acc) / 3
         if args.score == "overall" and overall_score > best_dev_acc:
             best_dev_acc = overall_score
             save_model(model, optimizer, args, config, args.filepath)
-        if args.score == "sst" and dev_sst_acc > best_dev_acc:
+        elif args.score == "sst" and dev_sst_acc > best_dev_acc:
             best_dev_acc = dev_sst_acc
             save_model(model, optimizer, args, config, args.filepath)
         elif args.score == "para" and dev_para_acc > best_dev_acc:
@@ -304,6 +375,8 @@ def train_multitask(args):
         print(f"Epoch {epoch}: train loss sst :: {train_loss_sst :.3f}, train acc sst :: {train_sst_acc :.3f}, dev acc sst :: {dev_sst_acc :.3f}")
         print(f"Epoch {epoch}: train loss para :: {train_loss_para :.3f}, train acc para :: {train_para_acc :.3f}, dev acc para :: {dev_para_acc :.3f}")
         print(f"Epoch {epoch}: train loss sts :: {train_loss_sts :.3f}, train corr sts:: {train_sts_corr :.3f}, dev corr sts :: {dev_sts_corr :.3f}")
+        if args.should_train_nli:
+            print(f"Epoch {epoch}: train loss nli :: {train_loss_nli :.3f}, train acc nli :: {train_nli_acc :.3f}, dev acc nli :: {dev_nli_acc :.3f}")
         if args.score == "overall": print(f"Epoch {epoch}: dev overall score :: {overall_score :.3f}")
 
 
@@ -430,12 +503,22 @@ def get_args():
     parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
 
     # baselines
-    parser.add_argument("--pooling_mode", type=str, default="cls")
+    parser.add_argument("--pooling_mode", type=str, default="mean")
     parser.add_argument("--should_train_sst", action="store_true")
     parser.add_argument("--should_train_para", action="store_true")
+    parser.add_argument("--should_train_sts", action="store_true")
+    parser.add_argument("--should_train_nli", action="store_true")
 
     # evaluation
     parser.add_argument("--score", type=str, default="overall", choices=("overall", "sst", "para", "sts"))
+
+    # nli dataset
+    parser.add_argument("--nli_train", type=str, default="data/snli-train.csv")
+    parser.add_argument("--nli_dev", type=str, default="data/snli-dev.csv")
+    parser.add_argument("--nli_test", type=str, default="data/snli-test.csv")
+
+    parser.add_argument("--nli_dev_out", type=str, default="predictions/nli-dev-output.csv")
+    parser.add_argument("--nli_test_out", type=str, default="predictions/nli-test-output.csv")
 
     args = parser.parse_args()
     return args
