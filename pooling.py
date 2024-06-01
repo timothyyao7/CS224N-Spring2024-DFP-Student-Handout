@@ -22,7 +22,7 @@ class Pooling(nn.Module):
             cls_token = features["pooler_output"]
             output_vectors.append(cls_token)
 
-        # mean pooling: TODO
+        # mean pooling
         if self.pooling_mode_mean:
             input_mask_expanded = (
                 attention_mask.unsqueeze(-1).expand(token_embeddings.size()).to(token_embeddings.dtype)
@@ -32,9 +32,14 @@ class Pooling(nn.Module):
             sum_mask = torch.clamp(sum_mask, min=1e-9)
             output_vectors.append(sum_embeddings / sum_mask)
 
-        # max pooling: TODO
+        # max pooling
         if self.pooling_mode_max:
-            output_vectors.append(torch.max(token_embeddings))
+            input_mask_expanded = (
+                attention_mask.unsqueeze(-1).expand(token_embeddings.size()).to(token_embeddings.dtype)
+            )
+            token_embeddings[input_mask_expanded == 0] = -1e9  # Set padding tokens to large negative value
+            max_over_time = torch.max(token_embeddings, 1)[0]
+            output_vectors.append(max_over_time)
 
         output_vector = torch.cat(output_vectors, 1)
         features["sentence_embedding"] = output_vector
