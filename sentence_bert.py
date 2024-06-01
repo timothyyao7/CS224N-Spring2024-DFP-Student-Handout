@@ -57,7 +57,8 @@ class MultitaskSentenceBERT(nn.Module):
         self.pooling = Pooling(config.hidden_size, config.pooling_mode)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.project_sentiment = nn.Linear(config.hidden_size, config.num_labels)
-        self.project_para = nn.Linear(config.hidden_size, 1)
+        self.project_para = nn.Linear(config.hidden_size, 1)            # original BERT classification
+        self.project_para_s = nn.Linear(3 * config.hidden_size, 1)      # SBERT classification
         self.project_sts = None
 
         self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
@@ -72,6 +73,7 @@ class MultitaskSentenceBERT(nn.Module):
         output = self.project_sentiment(output)
         return output
     
+    # used for original BERT para and STS tasks
     def get_similarity_embeddings(self,
                                   input_ids_1, attention_mask_1,
                                   input_ids_2, attention_mask_2):
@@ -85,10 +87,18 @@ class MultitaskSentenceBERT(nn.Module):
     def predict_paraphrase(self,
                            input_ids_1, attention_mask_1,
                            input_ids_2, attention_mask_2):
-        output = self.get_similarity_embeddings(input_ids_1, attention_mask_1, input_ids_2, attention_mask_2)
-        output = output["pooler_output"]
-        output = self.dropout(output)
-        output = self.project_para(output)
+        # original BERT paraphrase classification
+        # output = self.get_similarity_embeddings(input_ids_1, attention_mask_1, input_ids_2, attention_mask_2)
+        # output = output["pooler_output"]
+        # output = self.dropout(output)
+        # output = self.project_para(output)
+
+        # SBERT paraphrase classification
+        u, v = self.get_sentence_embeddings(input_ids_1, attention_mask_1, input_ids_2, attention_mask_2)
+        diff = torch.abs(u - v)
+        output = torch.cat((u, v, diff), dim=1)
+        # output = self.dropout(output)
+        output = self.project_para_s(output)
         return output
     
     def get_sentence_embeddings(self,
@@ -276,14 +286,25 @@ def train_multitask(args):
                                                                                          model,
                                                                                          device)
 
-        # select model based on sts performance
-        if dev_sts_corr > best_dev_acc:
+        # select model based on leaderboard overall performance
+        overall_score = (dev_sst_acc + (dev_sts_corr + 1) / 2 + dev_para_acc) / 3
+        if args.score == "overall" and overall_score > best_dev_acc:
+            best_dev_acc = overall_score
+            save_model(model, optimizer, args, config, args.filepath)
+        if args.score == "sst" and dev_sst_acc > best_dev_acc:
+            best_dev_acc = dev_sst_acc
+            save_model(model, optimizer, args, config, args.filepath)
+        elif args.score == "para" and dev_para_acc > best_dev_acc:
+            best_dev_acc = dev_para_acc
+            save_model(model, optimizer, args, config, args.filepath)
+        elif args.score == "sts" and dev_sts_corr > best_dev_acc:
             best_dev_acc = dev_sts_corr
             save_model(model, optimizer, args, config, args.filepath)
 
         print(f"Epoch {epoch}: train loss sst :: {train_loss_sst :.3f}, train acc sst :: {train_sst_acc :.3f}, dev acc sst :: {dev_sst_acc :.3f}")
         print(f"Epoch {epoch}: train loss para :: {train_loss_para :.3f}, train acc para :: {train_para_acc :.3f}, dev acc para :: {dev_para_acc :.3f}")
         print(f"Epoch {epoch}: train loss sts :: {train_loss_sts :.3f}, train corr sts:: {train_sts_corr :.3f}, dev corr sts :: {dev_sts_corr :.3f}")
+        if args.score == "overall": print(f"Epoch {epoch}: dev overall score :: {overall_score :.3f}")
 
 
 def test_multitask(args):
@@ -408,10 +429,13 @@ def get_args():
     parser.add_argument("--hidden_dropout_prob", type=float, default=0.3)
     parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
 
-    # new
+    # baselines
     parser.add_argument("--pooling_mode", type=str, default="cls")
-    parser.add_argument("--should_train_sst", action="store_true")          # debug
-    parser.add_argument("--should_train_para", action="store_true")         # debug
+    parser.add_argument("--should_train_sst", action="store_true")
+    parser.add_argument("--should_train_para", action="store_true")
+
+    # evaluation
+    parser.add_argument("--score", type=str, default="overall", choices=("overall", "sst", "para", "sts"))
 
     args = parser.parse_args()
     return args
