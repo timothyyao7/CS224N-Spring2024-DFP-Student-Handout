@@ -89,18 +89,19 @@ class MultitaskSentenceBERT(nn.Module):
     def predict_paraphrase(self,
                            input_ids_1, attention_mask_1,
                            input_ids_2, attention_mask_2):
-        # original BERT paraphrase classification
-        # output = self.get_similarity_embeddings(input_ids_1, attention_mask_1, input_ids_2, attention_mask_2)
-        # output = output["pooler_output"]
-        # output = self.dropout(output)
-        # output = self.project_para(output)
-
-        # SBERT paraphrase classification
-        u, v = self.get_sentence_embeddings(input_ids_1, attention_mask_1, input_ids_2, attention_mask_2)
-        diff = torch.abs(u - v)
-        output = torch.cat((u, v, diff), dim=1)
-        # output = self.dropout(output)
-        output = self.project_para_s(output)
+        if args.use_bert_para:
+            # original BERT paraphrase classification
+            output = self.get_similarity_embeddings(input_ids_1, attention_mask_1, input_ids_2, attention_mask_2)
+            output = output["pooler_output"]
+            output = self.dropout(output)
+            output = self.project_para(output)
+        else:
+            # SBERT paraphrase classification
+            u, v = self.get_sentence_embeddings(input_ids_1, attention_mask_1, input_ids_2, attention_mask_2)
+            diff = torch.abs(u - v)
+            output = torch.cat((u, v, diff), dim=1)
+            # output = self.dropout(output)
+            output = self.project_para_s(output)
         return output
     
     def get_sentence_embeddings(self,
@@ -148,7 +149,7 @@ def train_multitask(args):
     '''
     device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
     # Create the data and its corresponding datasets and dataloader.
-    if args.should_train_nli:
+    if args.should_train_nli or args.debug_nli:
         sst_train_data, num_labels, para_train_data, sts_train_data, nli_train_data = load_multitask_data_nli(args.sst_train, args.para_train, args.sts_train, args.nli_train, split ='train')
         sst_dev_data, num_labels, para_dev_data, sts_dev_data, nli_dev_data = load_multitask_data_nli(args.sst_dev, args.para_dev, args.sts_dev, args.nli_dev, split ='dev')
     else:
@@ -183,7 +184,7 @@ def train_multitask(args):
                                     collate_fn=para_dev_data.collate_fn)
     
     # Natural Language Inference (NLI): SNLI dataset
-    if args.should_train_nli:
+    if args.should_train_nli or args.debug_nli:
         nli_train_data = SentencePairDataset(nli_train_data, args)
         nli_dev_data = SentencePairDataset(nli_dev_data, args)
 
@@ -332,7 +333,7 @@ def train_multitask(args):
 
             train_loss_nli = train_loss_nli / num_batches_nli
 
-        if args.should_train_nli:
+        if args.should_train_nli or args.debug_nli:
             train_sst_acc, _, _, train_para_acc, _, _, train_sts_corr, _, _, train_nli_acc, _, _ = model_eval_multitask_nli(sst_train_dataloader,
                                                                                                                             para_train_dataloader,
                                                                                                                             sts_train_dataloader,
@@ -375,7 +376,7 @@ def train_multitask(args):
         print(f"Epoch {epoch}: train loss sst :: {train_loss_sst :.3f}, train acc sst :: {train_sst_acc :.3f}, dev acc sst :: {dev_sst_acc :.3f}")
         print(f"Epoch {epoch}: train loss para :: {train_loss_para :.3f}, train acc para :: {train_para_acc :.3f}, dev acc para :: {dev_para_acc :.3f}")
         print(f"Epoch {epoch}: train loss sts :: {train_loss_sts :.3f}, train corr sts:: {train_sts_corr :.3f}, dev corr sts :: {dev_sts_corr :.3f}")
-        if args.should_train_nli:
+        if args.should_train_nli or args.debug_nli:
             print(f"Epoch {epoch}: train loss nli :: {train_loss_nli :.3f}, train acc nli :: {train_nli_acc :.3f}, dev acc nli :: {dev_nli_acc :.3f}")
         if args.score == "overall": print(f"Epoch {epoch}: dev overall score :: {overall_score :.3f}")
 
@@ -503,6 +504,7 @@ def get_args():
     parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
 
     # baselines
+    parser.add_argument("--use_bert_para", action="store_true")
     parser.add_argument("--pooling_mode", type=str, default="mean")
     parser.add_argument("--should_train_sst", action="store_true")
     parser.add_argument("--should_train_para", action="store_true")
@@ -519,6 +521,9 @@ def get_args():
 
     parser.add_argument("--nli_dev_out", type=str, default="predictions/nli-dev-output.csv")
     parser.add_argument("--nli_test_out", type=str, default="predictions/nli-test-output.csv")
+
+    # debug
+    parser.add_argument("--debug_nli", action="store_true")
 
     args = parser.parse_args()
     return args
