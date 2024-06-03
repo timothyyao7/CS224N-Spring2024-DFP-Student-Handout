@@ -89,18 +89,19 @@ class MultitaskSentenceBERT(nn.Module):
     def predict_paraphrase(self,
                            input_ids_1, attention_mask_1,
                            input_ids_2, attention_mask_2):
-        # original BERT paraphrase classification
-        # output = self.get_similarity_embeddings(input_ids_1, attention_mask_1, input_ids_2, attention_mask_2)
-        # output = output["pooler_output"]
-        # output = self.dropout(output)
-        # output = self.project_para(output)
-
-        # SBERT paraphrase classification
-        u, v = self.get_sentence_embeddings(input_ids_1, attention_mask_1, input_ids_2, attention_mask_2)
-        diff = torch.abs(u - v)
-        output = torch.cat((u, v, diff), dim=1)
-        # output = self.dropout(output)
-        output = self.project_para_s(output)
+        if args.use_bert_para:
+            # original BERT paraphrase classification
+            output = self.get_similarity_embeddings(input_ids_1, attention_mask_1, input_ids_2, attention_mask_2)
+            output = output["pooler_output"]
+            output = self.dropout(output)
+            output = self.project_para(output)
+        else:
+            # SBERT paraphrase classification
+            u, v = self.get_sentence_embeddings(input_ids_1, attention_mask_1, input_ids_2, attention_mask_2)
+            diff = torch.abs(u - v)
+            output = torch.cat((u, v, diff), dim=1)
+            # output = self.dropout(output)
+            output = self.project_para_s(output)
         return output
     
     def get_sentence_embeddings(self,
@@ -503,6 +504,7 @@ def get_args():
     parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
 
     # baselines
+    parser.add_argument("--use_bert_para", action="store_true")
     parser.add_argument("--pooling_mode", type=str, default="mean")
     parser.add_argument("--should_train_sst", action="store_true")
     parser.add_argument("--should_train_para", action="store_true")
