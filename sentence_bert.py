@@ -473,6 +473,9 @@ def test_multitask(args):
                 dev_paraphrase_accuracy, dev_para_y_pred, dev_para_sent_ids, \
                 dev_sts_corr, dev_sts_y_pred, dev_sts_sent_ids, \
                 dev_nli_accuracy, dev_nli_y_pred, dev_nli_sent_ids = model_eval_multitask_nli(sst_dev_dataloader, para_dev_dataloader, sts_dev_dataloader, nli_dev_dataloader,model, device)
+            
+            
+            return
         else:
             print(f"Loaded model to test from {args.filepath}")
 
