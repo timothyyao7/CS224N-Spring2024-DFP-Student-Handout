@@ -62,7 +62,7 @@ class MultitaskSentenceBERT(nn.Module):
         self.project_sentiment = nn.Linear(config.hidden_size, config.num_labels)
         self.project_para = nn.Linear(config.hidden_size, 1)            # original BERT classification
         cat_len = 4 if args.four_cat else 3
-        self.project_para_s = nn.Linear(cat_len * config.hidden_size, 1)      # SBERT classification
+        if not args.eval_snli: self.project_para_s = nn.Linear(cat_len * config.hidden_size, 1)      # SBERT classification
         if not args.eval_snli: self.project_sts = nn.Linear(config.hidden_size, 1)             # original BERT
         self.project_inf = nn.Linear(3 * config.hidden_size, 3)
 
