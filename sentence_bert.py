@@ -445,13 +445,36 @@ def test_multitask(args):
     '''Test and save predictions on the dev and test sets of all three tasks.'''
     with torch.no_grad():
         device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
-        saved = torch.load(args.filepath)
+        if args.eval_snli:
+            saved = torch.load(args.existing_model_path)
+        else:
+            saved = torch.load(args.filepath)
         config = saved['model_config']
 
         model = MultitaskSentenceBERT(config)
         model.load_state_dict(saved['model'])
         model = model.to(device)
-        print(f"Loaded model to test from {args.filepath}")
+        if args.eval_snli:
+            print(f"Loaded model to test from {args.existing_model_path}")
+            sst_dev_data, num_labels, para_dev_data, sts_dev_data, nli_dev_data = load_multitask_data_nli(args.sst_dev, args.para_dev, args.sts_dev, args.nli_dev, split='dev')
+            sst_dev_data = SentenceClassificationDataset(sst_dev_data, args)
+            sst_dev_dataloader = DataLoader(sst_dev_data, shuffle=False, batch_size=args.batch_size,
+                                        collate_fn=sst_dev_data.collate_fn)
+            para_dev_data = SentencePairDataset(para_dev_data, args)
+            para_dev_dataloader = DataLoader(para_dev_data, shuffle=False, batch_size=args.batch_size,
+                                         collate_fn=para_dev_data.collate_fn)
+            sts_dev_data = SentencePairDataset(sts_dev_data, args, isRegression=True)
+            sts_dev_dataloader = DataLoader(sts_dev_data, shuffle=False, batch_size=args.batch_size,
+                                        collate_fn=sts_dev_data.collate_fn)
+            nli_dev_data = SentencePairDataset(nli_dev_data, args)
+            nli_dev_dataloader = DataLoader(nli_dev_data,shuffle=False, batch_size=args.batch_size,
+                                               collate_fn=sts_dev_data.collate_fn)
+            dev_sentiment_accuracy,dev_sst_y_pred, dev_sst_sent_ids, \
+                dev_paraphrase_accuracy, dev_para_y_pred, dev_para_sent_ids, \
+                dev_sts_corr, dev_sts_y_pred, dev_sts_sent_ids, \
+                dev_nli_accuracy, dev_nli_y_pred, dev_nli_sent_ids = model_eval_multitask_nli(sst_dev_dataloader, para_dev_dataloader, sts_dev_dataloader, nli_dev_dataloader,model, device)
+        else:
+            print(f"Loaded model to test from {args.filepath}")
 
         sst_test_data, num_labels,para_test_data, sts_test_data = \
             load_multitask_data(args.sst_test,args.para_test, args.sts_test, split='test')
@@ -591,13 +614,16 @@ def get_args():
 
     # continue training model
     parser.add_argument("--load_model", action="store_true")
-    parser.add_argument("--existing_model_path", type=str)
 
     # training batch skip for large datasets
     parser.add_argument("--batch_skip", type=int, default=0)
 
     # different paraphrase concatenation method
     parser.add_argument("--four_cat", action="store_true")
+    
+    # evaluate
+    parser.add_argument("--eval_snli", action="store_true")
+    parser.add_argument("--existing_model_path", type=str)
 
     args = parser.parse_args()
     return args
@@ -607,6 +633,6 @@ if __name__ == "__main__":
     args = get_args()
     args.filepath = f'{args.fine_tune_mode}-{args.epochs}-{args.lr}-multitask.pt' # Save path.
     seed_everything(args.seed)  # Fix the seed for reproducibility.
-    train_multitask(args)
+    if not args.eval_snli: train_multitask(args)
     test_multitask(args)
 
