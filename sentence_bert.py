@@ -63,7 +63,7 @@ class MultitaskSentenceBERT(nn.Module):
         self.project_para = nn.Linear(config.hidden_size, 1)            # original BERT classification
         cat_len = 4 if args.four_cat else 3
         self.project_para_s = nn.Linear(cat_len * config.hidden_size, 1)      # SBERT classification
-        self.project_sts = None
+        self.project_sts = nn.Linear(config.hidden_size, 1)             # original BERT
         self.project_inf = nn.Linear(3 * config.hidden_size, 3)
 
         self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
@@ -123,8 +123,16 @@ class MultitaskSentenceBERT(nn.Module):
     def predict_similarity(self,
                            input_ids_1, attention_mask_1,
                            input_ids_2, attention_mask_2):
-        u, v = self.get_sentence_embeddings(input_ids_1, attention_mask_1, input_ids_2, attention_mask_2)
-        return self.cos(u, v)
+        if args.use_bert_sts:
+            # original BERT STS prediction
+            output = self.get_similarity_embeddings(input_ids_1, attention_mask_1, input_ids_2, attention_mask_2)
+            output = output["pooler_output"]
+            output = self.dropout(output)
+            output = self.project_sts(output)
+            return output
+        else:
+            u, v = self.get_sentence_embeddings(input_ids_1, attention_mask_1, input_ids_2, attention_mask_2)
+            return self.cos(u, v)
     
     def predict_inference(self,
                           input_ids_1, attention_mask_1,
@@ -326,9 +334,11 @@ def train_multitask(args):
                 b_labels = b_labels.float() / 5.0
 
                 optimizer.zero_grad()
-                cos_similarity = model.predict_similarity(b_ids_1, b_mask_1, b_ids_2, b_mask_2)
-                # loss = F.cosine_embedding_loss(u, v, b_labels, reduction='sum') / args.batch_size
-                loss = F.mse_loss(cos_similarity, b_labels, reduction='sum') / args.batch_size
+                output = model.predict_similarity(b_ids_1, b_mask_1, b_ids_2, b_mask_2)
+                if args.use_bert_sts:
+                    loss = F.binary_cross_entropy_with_logits(output.view(-1), b_labels, reduction='sum') / args.batch_size
+                else:
+                    loss = F.mse_loss(output, b_labels, reduction='sum') / args.batch_size
 
                 loss.backward()
                 optimizer.step()
@@ -555,6 +565,7 @@ def get_args():
 
     # baselines
     parser.add_argument("--use_bert_para", action="store_true")
+    parser.add_argument("--use_bert_sts", action="store_true")
     parser.add_argument("--pooling_mode", type=str, default="mean")
     parser.add_argument("--should_train_sst", action="store_true")
     parser.add_argument("--should_train_para", action="store_true")
