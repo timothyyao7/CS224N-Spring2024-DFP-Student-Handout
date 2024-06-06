@@ -61,7 +61,8 @@ class MultitaskSentenceBERT(nn.Module):
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
         self.project_sentiment = nn.Linear(config.hidden_size, config.num_labels)
         self.project_para = nn.Linear(config.hidden_size, 1)            # original BERT classification
-        self.project_para_s = nn.Linear(3 * config.hidden_size, 1)      # SBERT classification
+        cat_len = 4 if args.four_cat else 3
+        self.project_para_s = nn.Linear(cat_len * config.hidden_size, 1)      # SBERT classification
         self.project_sts = None
         self.project_inf = nn.Linear(3 * config.hidden_size, 3)
 
@@ -101,7 +102,11 @@ class MultitaskSentenceBERT(nn.Module):
             # SBERT paraphrase classification
             u, v = self.get_sentence_embeddings(input_ids_1, attention_mask_1, input_ids_2, attention_mask_2)
             diff = torch.abs(u - v)
-            output = torch.cat((u, v, diff), dim=1)
+            if args.four_cat:
+                prod = u * v
+                output = torch.cat((u, v, diff, prod), dim=1)
+            else:
+                output = torch.cat((u, v, diff), dim=1)
             # output = self.dropout(output)
             output = self.project_para_s(output)
         return output
@@ -579,6 +584,9 @@ def get_args():
 
     # training batch skip for large datasets
     parser.add_argument("--batch_skip", type=int, default=0)
+
+    # different paraphrase concatenation method
+    parser.add_argument("--four_cat", action="store_true")
 
     args = parser.parse_args()
     return args
