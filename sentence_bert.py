@@ -206,6 +206,13 @@ def train_multitask(args):
     config = SimpleNamespace(**config)
 
     model = MultitaskSentenceBERT(config)
+    if args.load_model:
+        assert args.existing_model_path is not None
+        saved = torch.load(args.existing_model_path)
+        model.load_state_dict(saved['model'])
+
+        print(f"Loaded model to continue training on {args.existing_model_path}")
+    
     model = model.to(device)
 
     tensorboard_path = "sbert" if args.use_gpu else "sbert_local"
@@ -321,8 +328,8 @@ def train_multitask(args):
                 train_loss_sts += loss.item()
                 num_batches_sts += 1
 
-                if sts_iter % args.log_every == 0:
-                    writer.add_scalar('loss-sts/train', train_loss_sts / num_batches_sts, sts_iter)
+                # if sts_iter == 0:
+                writer.add_scalar('loss-sts/train', train_loss_sts / num_batches_sts, sts_iter)
 
             train_loss_sts = train_loss_sts / num_batches_sts
 
@@ -562,6 +569,10 @@ def get_args():
 
     # logging
     parser.add_argument("--log_every", type=int, default=10)
+
+    # continue training model
+    parser.add_argument("--load_model", action="store_true")
+    parser.add_argument("--existing_model_path", type=str)
 
     args = parser.parse_args()
     return args
