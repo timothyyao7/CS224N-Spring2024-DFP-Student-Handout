@@ -25,6 +25,8 @@ from datasets import (
 
 from evaluation import model_eval_sst, model_eval_multitask, model_eval_test_multitask, model_eval_multitask_nli
 
+from torch.utils.tensorboard import SummaryWriter
+
 TQDM_DISABLE=False
 
 # Fix the random seed.
@@ -206,9 +208,16 @@ def train_multitask(args):
     model = MultitaskSentenceBERT(config)
     model = model.to(device)
 
+    tensorboard_path = "sbert" if args.use_gpu else "sbert_local"
+    writer = SummaryWriter(log_dir=f"./runs/{tensorboard_path}")
+
     lr = args.lr
     optimizer = AdamW(model.parameters(), lr=lr)
     best_dev_acc = 0
+
+    sst_iter = 0
+    para_iter = 0
+    sts_iter = 0
 
     # Run for the specified number of epochs.
     for epoch in range(args.epochs):
@@ -242,6 +251,11 @@ def train_multitask(args):
                 train_loss_sst += loss.item()
                 num_batches_sst += 1
 
+                sst_iter += 1
+
+                # if sst_iter == 0:
+                writer.add_scalar('loss-sst/train', train_loss_sst / num_batches_sst, sst_iter)
+
             train_loss_sst = train_loss_sst / num_batches_sst
 
         # train on paraphrase data
@@ -270,6 +284,11 @@ def train_multitask(args):
 
                 train_loss_para += loss.item()
                 num_batches_para += 1
+
+                para_iter += 1
+                
+                if para_iter % args.log_every == 0:
+                    writer.add_scalar('loss-para/train', train_loss_para / num_batches_para, para_iter)
 
             train_loss_para = train_loss_para / num_batches_para
 
@@ -301,6 +320,9 @@ def train_multitask(args):
 
                 train_loss_sts += loss.item()
                 num_batches_sts += 1
+
+                if sts_iter % args.log_every == 0:
+                    writer.add_scalar('loss-sts/train', train_loss_sts / num_batches_sts, sts_iter)
 
             train_loss_sts = train_loss_sts / num_batches_sts
 
@@ -379,6 +401,19 @@ def train_multitask(args):
         if args.should_train_nli or args.debug_nli:
             print(f"Epoch {epoch}: train loss nli :: {train_loss_nli :.3f}, train acc nli :: {train_nli_acc :.3f}, dev acc nli :: {dev_nli_acc :.3f}")
         if args.score == "overall": print(f"Epoch {epoch}: dev overall score :: {overall_score :.3f}")
+
+        writer.add_scalars('acc/train',
+                           {'sst':train_sst_acc,
+                            'para':train_para_acc},
+                           epoch+1)
+        writer.add_scalar('sts/train', train_sts_corr, epoch+1)
+
+        writer.add_scalars('acc/dev',
+                           {'sst':dev_sst_acc,
+                            'para':dev_para_acc},
+                           epoch+1)
+        writer.add_scalar('sts/dev', dev_sts_corr, epoch+1)
+        writer.add_scalar('overall/dev', overall_score, epoch+1)
 
 
 def test_multitask(args):
@@ -524,6 +559,9 @@ def get_args():
 
     # debug
     parser.add_argument("--debug_nli", action="store_true")
+
+    # logging
+    parser.add_argument("--log_every", type=int, default=10)
 
     args = parser.parse_args()
     return args
